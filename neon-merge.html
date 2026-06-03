@@ -46,11 +46,177 @@
     user-select: none;
     pointer-events: none;
   }
+
+  #seedOverlay {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    z-index: 10;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  #seedOverlay.visible {
+    pointer-events: auto;
+  }
+  .seed-panel {
+    width: min(560px, calc(100vw - 28px));
+    box-sizing: border-box;
+    padding: 30px 34px 28px;
+    border: 2px solid rgba(70, 235, 255, 0.92);
+    border-radius: 22px;
+    background: radial-gradient(circle at 50% 0%, rgba(24, 40, 95, 0.94), rgba(4, 7, 22, 0.94) 62%, rgba(0, 0, 0, 0.92));
+    box-shadow: 0 0 32px rgba(70, 235, 255, 0.42), inset 0 0 28px rgba(255, 55, 225, 0.16);
+    color: var(--text);
+    text-align: center;
+    user-select: none;
+    backdrop-filter: blur(4px);
+  }
+  .seed-title {
+    margin: 0;
+    color: var(--cyan);
+    font-size: 42px;
+    line-height: 1;
+    letter-spacing: 0.08em;
+    text-shadow: 0 0 18px rgba(70, 235, 255, 0.8);
+  }
+  .seed-subtitle {
+    margin: 12px 0 26px;
+    color: rgba(236, 246, 255, 0.66);
+    font-size: 13px;
+    letter-spacing: 0.10em;
+  }
+  .seed-label {
+    margin: 0 0 8px;
+    color: rgba(236, 246, 255, 0.72);
+    font-size: 13px;
+    text-align: left;
+    letter-spacing: 0.08em;
+  }
+  .seed-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0 0 8px;
+    padding: 14px 16px;
+    border: 1px solid rgba(70, 235, 255, 0.78);
+    border-radius: 12px;
+    outline: none;
+    background: rgba(2, 5, 18, 0.86);
+    color: #ecf6ff;
+    font: 700 24px Consolas, Menlo, ui-monospace, monospace;
+    letter-spacing: 0.18em;
+    text-align: center;
+    text-transform: uppercase;
+    box-shadow: inset 0 0 12px rgba(70, 235, 255, 0.16);
+  }
+  .seed-input:focus {
+    border-color: rgba(255, 55, 225, 0.96);
+    box-shadow: 0 0 16px rgba(255, 55, 225, 0.32), inset 0 0 12px rgba(70, 235, 255, 0.16);
+  }
+  .seed-hint {
+    margin: 0 0 20px;
+    color: rgba(236, 246, 255, 0.46);
+    font-size: 12px;
+    text-align: left;
+  }
+  .seed-buttons {
+    display: grid;
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .seed-button {
+    width: 100%;
+    padding: 13px 14px;
+    border: 1px solid rgba(70, 235, 255, 0.76);
+    border-radius: 14px;
+    background: linear-gradient(90deg, rgba(20, 70, 100, 0.92), rgba(65, 22, 95, 0.92));
+    color: #ecf6ff;
+    font: 700 14px Consolas, Menlo, ui-monospace, monospace;
+    letter-spacing: 0.10em;
+    cursor: pointer;
+    touch-action: manipulation;
+    box-shadow: 0 0 12px rgba(70, 235, 255, 0.22);
+  }
+  .seed-button.secondary {
+    border-color: rgba(255, 55, 225, 0.70);
+    background: linear-gradient(90deg, rgba(60, 22, 90, 0.88), rgba(20, 42, 76, 0.88));
+  }
+  .seed-button:active {
+    transform: translateY(1px);
+    filter: brightness(1.22);
+  }
+  .seed-score-line {
+    margin: 18px 0 12px;
+    color: rgba(236, 246, 255, 0.74);
+    font-size: 14px;
+    line-height: 1.8;
+  }
+  .seed-current {
+    color: var(--cyan);
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+  .seed-mobile-note {
+    margin: 22px 0 0;
+    color: rgba(236, 246, 255, 0.46);
+    font-size: 11px;
+  }
+  .seed-hidden {
+    display: none;
+  }
+  @media (max-width: 680px) {
+    .seed-panel {
+      padding: 24px 22px 22px;
+    }
+    .seed-title {
+      font-size: 32px;
+    }
+    .seed-input {
+      font-size: 21px;
+      padding: 12px 13px;
+    }
+    .seed-button {
+      padding: 13px 10px;
+      font-size: 12px;
+    }
+  }
+
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="game" width="960" height="900"></canvas></div>
 <div id="hint">NEON MERGE / keyboard-only / mouse ignored</div>
+
+<div id="seedOverlay" class="visible">
+  <div id="startPanel" class="seed-panel">
+    <h1 class="seed-title">NEON MERGE</h1>
+    <div class="seed-subtitle">SPACE MERGE SCORE ATTACK</div>
+    <div class="seed-label">SEED</div>
+    <input id="startSeedInput" class="seed-input" maxlength="8" pattern="[A-Z0-9]{0,8}" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="A7K2Q9ZB" />
+    <div class="seed-hint">A-Z / 0-9 / MAX 8</div>
+    <div class="seed-buttons">
+      <button id="startWithSeedBtn" class="seed-button">START WITH SEED</button>
+      <button id="startRandomBtn" class="seed-button secondary">START RANDOM</button>
+    </div>
+    <div class="seed-mobile-note">TAP: DROP / HOLD &amp; DRAG: RAPID DROP</div>
+  </div>
+
+  <div id="retryPanel" class="seed-panel seed-hidden">
+    <h1 class="seed-title">SYSTEM OVERLOAD</h1>
+    <div id="retryScoreLine" class="seed-score-line">SCORE 0<br>BEST 0</div>
+    <div class="seed-current">SEED: <span id="retrySeedText">--------</span></div>
+    <div class="seed-buttons">
+      <button id="retrySameBtn" class="seed-button">RETRY SAME SEED</button>
+      <button id="retryRandomBtn" class="seed-button secondary">RETRY RANDOM SEED</button>
+    </div>
+    <div class="seed-label" style="margin-top:18px;">NEW SEED</div>
+    <input id="retrySeedInput" class="seed-input" maxlength="8" pattern="[A-Z0-9]{0,8}" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="B8M4X2QK" />
+    <div class="seed-hint">EMPTY = RANDOM</div>
+    <div class="seed-buttons">
+      <button id="retryNewSeedBtn" class="seed-button">RETRY WITH NEW SEED</button>
+    </div>
+  </div>
+</div>
 <script>
 'use strict';
 
@@ -117,6 +283,37 @@
     ['OMEGA',   136, [180, 255,  70]],
   ];
   const MAX_TIER = TIER_DATA.length - 1;
+
+  const SEED_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+
+  function sanitizeSeed(seed) {
+    return String(seed || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  }
+  function randomSeed() {
+    let s = '';
+    for (let i = 0; i < 8; i++) s += SEED_CHARS[(Math.random() * SEED_CHARS.length) | 0];
+    return s;
+  }
+  function seedToState(seed) {
+    let h = 1779033703 ^ seed.length;
+    for (let i = 0; i < seed.length; i++) {
+      h = Math.imul(h ^ seed.charCodeAt(i), 3432918353);
+      h = (h << 13) | (h >>> 19);
+    }
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    return (h ^ (h >>> 16)) >>> 0 || 0x9e3779b9;
+  }
+  function makeSeedRng(seed) {
+    let a = seedToState(seed);
+    return function() {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
 
   const keys = new Set();
   let audioEnabled = true;
@@ -437,10 +634,17 @@
   class Game {
     constructor() {
       this.best = Number(localStorage.getItem('neonMergeBest') || localStorage.getItem('suikaWarsBest') || 0);
-      this.reset();
+      this.seed = randomSeed();
+      this.spawnRng = makeSeedRng(this.seed);
+      this.started = false;
+      this.reset(this.seed, false);
     }
 
-    reset() {
+    reset(seed = this.seed, started = true) {
+      const normalized = sanitizeSeed(seed) || randomSeed();
+      this.seed = normalized;
+      this.spawnRng = makeSeedRng(this.seed);
+      this.started = started;
       this.pieces = [];
       this.particles = [];
       this.rings = [];
@@ -464,6 +668,10 @@
       this.messageTimer = 2.2;
     }
 
+    start(seed) { this.reset(seed, true); }
+    retrySameSeed() { this.reset(this.seed, true); }
+    retryRandomSeed() { this.reset(randomSeed(), true); }
+
     randomSpawnTier() {
       let cap = 2;
       if (this.score > 2000) cap = 3;
@@ -473,11 +681,12 @@
         const weight = Math.max(1, 6 - t * 2);
         for (let i = 0; i < weight; i++) pool.push(t);
       }
-      return choice(pool);
+      const r = this.spawnRng ? this.spawnRng() : Math.random();
+      return pool[(r * pool.length) | 0];
     }
 
     currentTier() { return this.nextQueue[0]; }
-    canDrop() { return !this.gameOver && !this.paused && this.dropCooldown <= 0; }
+    canDrop() { return this.started && !this.gameOver && !this.paused && this.dropCooldown <= 0; }
 
     drop() {
       if (!this.canDrop()) return;
@@ -596,6 +805,7 @@
       for (const r of this.rings) r.update(dt);
       this.rings = this.rings.filter(r => r.life > 0);
 
+      if (!this.started) return;
       if (this.gameOver || this.paused) return;
       this.physics(dt);
       this.checkGameOver(dt);
@@ -1182,6 +1392,7 @@
         text(c, line, x + 24, y, 12, GREY);
         y += 16;
       }
+      text(c, `SEED : ${this.seed || '--------'}`, x + 24, 806, 11, CYAN, 'left', '700');
       text(c, `AUDIO : ${audioEnabled ? 'ON' : 'OFF'}`, x + 24, 824, 12, audioEnabled ? LIME : RED);
     }
 
@@ -1200,6 +1411,7 @@
     }
 
     drawOverlayMessages(c) {
+      if (!this.started) return;
       if (this.messageTimer > 0 && !this.gameOver) {
         const a = clamp(this.messageTimer / 2.2, 0, 1);
         const msg = 'PC: HOLD SPACE / ENTER. TOUCH: TAP DROP / HOLD & DRAG RAPID.';
@@ -1208,7 +1420,7 @@
         text(c, msg, FIELD_X + FIELD_W / 2, yy, 24, WHITE, 'center', '700');
       }
       if (this.paused) this.centerModal(c, 'PAUSED', 'Press P to resume');
-      if (this.gameOver) this.centerModal(c, 'SYSTEM OVERLOAD', 'Press R to restart');
+      // Game over retry flow is handled by the seed overlay UI.
     }
 
     draw(c) {
@@ -1242,6 +1454,101 @@
   }
 
   const game = new Game();
+
+
+  const seedOverlay = document.getElementById('seedOverlay');
+  const startPanel = document.getElementById('startPanel');
+  const retryPanel = document.getElementById('retryPanel');
+  const startSeedInput = document.getElementById('startSeedInput');
+  const retrySeedInput = document.getElementById('retrySeedInput');
+  const retryScoreLine = document.getElementById('retryScoreLine');
+  const retrySeedText = document.getElementById('retrySeedText');
+  let overlayMode = '';
+
+  function normalizeSeedInput(el) {
+    const v = sanitizeSeed(el.value);
+    if (el.value !== v) el.value = v;
+    return v;
+  }
+
+  function beginRun(seed) {
+    keys.clear();
+    stopTouchRapid();
+    ensureAudio();
+    game.start(sanitizeSeed(seed) || randomSeed());
+    syncOverlay(true);
+  }
+
+  function syncOverlay(force = false) {
+    const mode = !game.started ? 'start' : (game.gameOver ? 'retry' : 'hidden');
+    if (!force && mode === overlayMode) return;
+    overlayMode = mode;
+
+    if (mode === 'hidden') {
+      seedOverlay.classList.remove('visible');
+      startPanel.classList.add('seed-hidden');
+      retryPanel.classList.add('seed-hidden');
+      return;
+    }
+
+    seedOverlay.classList.add('visible');
+    if (mode === 'start') {
+      startPanel.classList.remove('seed-hidden');
+      retryPanel.classList.add('seed-hidden');
+      return;
+    }
+
+    startPanel.classList.add('seed-hidden');
+    retryPanel.classList.remove('seed-hidden');
+    retryScoreLine.innerHTML = `SCORE ${fmt(game.score)}<br>BEST ${fmt(game.best)}`;
+    retrySeedText.textContent = game.seed;
+  }
+
+  for (const input of [startSeedInput, retrySeedInput]) {
+    input.addEventListener('input', () => normalizeSeedInput(input));
+    input.addEventListener('keydown', ev => {
+      if (ev.code === 'Enter') {
+        ev.preventDefault();
+        if (input === startSeedInput) beginRun(normalizeSeedInput(startSeedInput));
+        else beginRun(normalizeSeedInput(retrySeedInput));
+      }
+      ev.stopPropagation();
+    });
+  }
+
+  document.getElementById('startWithSeedBtn').addEventListener('click', ev => {
+    ev.preventDefault();
+    beginRun(normalizeSeedInput(startSeedInput));
+  });
+  document.getElementById('startRandomBtn').addEventListener('click', ev => {
+    ev.preventDefault();
+    beginRun(randomSeed());
+  });
+  document.getElementById('retrySameBtn').addEventListener('click', ev => {
+    ev.preventDefault();
+    keys.clear();
+    stopTouchRapid();
+    ensureAudio();
+    game.retrySameSeed();
+    syncOverlay(true);
+  });
+  document.getElementById('retryRandomBtn').addEventListener('click', ev => {
+    ev.preventDefault();
+    keys.clear();
+    stopTouchRapid();
+    ensureAudio();
+    game.retryRandomSeed();
+    syncOverlay(true);
+  });
+  document.getElementById('retryNewSeedBtn').addEventListener('click', ev => {
+    ev.preventDefault();
+    beginRun(normalizeSeedInput(retrySeedInput));
+  });
+
+  seedOverlay.addEventListener('pointerdown', ev => ev.stopPropagation(), { passive: false });
+  seedOverlay.addEventListener('touchstart', ev => ev.stopPropagation(), { passive: false });
+  syncOverlay(true);
+
 
   function clientToCanvas(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
@@ -1294,6 +1601,7 @@
 
   // Mouse remains disabled on desktop. Touch / pen are enabled for mobile play.
   const blockMouseInput = ev => {
+    if (ev.target && ev.target.closest && ev.target.closest('#seedOverlay')) return;
     ev.preventDefault();
     ev.stopPropagation();
   };
@@ -1412,20 +1720,22 @@
   }, { passive: false });
 
   window.addEventListener('keydown', ev => {
+    const seedInputFocused = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('seed-input');
+    if (seedInputFocused) return;
     if (ev.code === 'ArrowLeft' || ev.code === 'ArrowRight' || ev.code === 'Space' || ev.code === 'Enter') {
       keys.add(ev.code);
     }
     if (['Space', 'Enter', 'ArrowLeft', 'ArrowRight'].includes(ev.code)) ev.preventDefault();
     if (['Space', 'Enter', 'ArrowLeft', 'ArrowRight', 'KeyR', 'KeyP', 'KeyM'].includes(ev.code)) ensureAudio();
     if ((ev.code === 'Space' || ev.code === 'Enter') && !ev.repeat) game.drop();
-    else if (ev.code === 'KeyR' && !ev.repeat) game.reset();
-    else if (ev.code === 'KeyP' && !ev.repeat) { if (!game.gameOver) game.paused = !game.paused; }
+    else if (ev.code === 'KeyR' && !ev.repeat && game.started) { game.retrySameSeed(); syncOverlay(true); }
+    else if (ev.code === 'KeyP' && !ev.repeat) { if (game.started && !game.gameOver) game.paused = !game.paused; }
     else if (ev.code === 'KeyM' && !ev.repeat) {
       audioEnabled = !audioEnabled;
       if (!audioEnabled && audioCtx) audioCtx.suspend();
       if (audioEnabled) ensureAudio();
     }
-    else if (ev.code === 'Escape' && !ev.repeat) game.reset();
+    else if (ev.code === 'Escape' && !ev.repeat && game.started) { game.retrySameSeed(); syncOverlay(true); }
   }, { passive: false });
   window.addEventListener('keyup', ev => {
     if (ev.code === 'ArrowLeft' || ev.code === 'ArrowRight' || ev.code === 'Space' || ev.code === 'Enter') {
@@ -1443,6 +1753,7 @@
     last = now;
     updateTouchRapid(now);
     game.update(dt);
+    syncOverlay();
     game.draw(ctx);
     requestAnimationFrame(frame);
   }
