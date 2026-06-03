@@ -1,0 +1,1453 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>NEON MERGE - Keyboard Only</title>
+<style>
+  :root {
+    --bg: #050714;
+    --cyan: #46ebff;
+    --magenta: #ff37e1;
+    --text: #ecf6ff;
+  }
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 35%, #101b3f 0%, #050714 58%, #02030a 100%);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  #wrap {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+  }
+  canvas {
+    display: block;
+    width: min(100vw, calc(100vh * 1.0666667));
+    height: min(100vh, calc(100vw * 0.9375));
+    max-width: 100vw;
+    max-height: 100vh;
+    image-rendering: auto;
+    touch-action: none;
+    filter: saturate(1.08) contrast(1.02);
+    cursor: none;
+  }
+  #hint {
+    position: fixed;
+    left: 10px;
+    bottom: 8px;
+    font-size: 11px;
+    color: rgba(236, 246, 255, 0.55);
+    user-select: none;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="960" height="900"></canvas></div>
+<div id="hint">NEON MERGE / keyboard-only / mouse ignored</div>
+<script>
+'use strict';
+
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d', { alpha: false });
+
+  const WIDTH = 960;
+  const HEIGHT = 900;
+  const FPS_CAP_DT = 1 / 30;
+
+  const FIELD_X = 80;
+  const FIELD_Y = 82;
+  const FIELD_W = 560;
+  const FIELD_H = 760;
+  const FIELD_LEFT = FIELD_X;
+  const FIELD_RIGHT = FIELD_X + FIELD_W;
+  const FIELD_TOP = FIELD_Y;
+  const FIELD_BOTTOM = FIELD_Y + FIELD_H;
+  const DANGER_Y = FIELD_Y + 92;
+  const SPAWN_Y = FIELD_Y + 50;
+
+  const GRAVITY = 1450.0;
+  const MAX_FALL_SPEED = 1800.0;
+  const WALL_RESTITUTION = 0.36;
+  const FLOOR_RESTITUTION = 0.24;
+  const AIR_DRAG = 0.998;
+  const SOLVER_ITERATIONS = 4;
+  const DROP_DELAY = 0.12;
+  const AIM_SPEED = 720.0;
+  const TOUCH_HOLD_MS = 180;
+  const TOUCH_DRAG_PX = 10;
+  const MERGE_GAP_TOLERANCE = 0.12; // fraction of smaller radius; allows merges even with a tiny visible gap
+  const MERGE_MIN_PIXELS = 4;
+  const COMBO_WINDOW = 1.65;
+  const COMBO_CAP = 2000.00;
+  const COMBO_MAX_AT = 1000;
+  const COMBO_CURVE_POWER = 3.0; // cubic curve: slow early growth, reaches cap at 1000 combo
+  const MERGE_SOUND_MIN_TIER = 5; // QUASAR and above only; keeps small chains quiet
+  const SCORE_BASE_BY_NEW_TIER = [0, 120, 280, 650, 1450, 3200, 7000, 15000, 32000, 68000, 145000];
+  const OMEGA_BLAST_BASE_SCORE = 320000;
+
+  const BG = [5, 7, 20];
+  const PANEL_BG = [9, 12, 30];
+  const CYAN = [70, 235, 255];
+  const MAGENTA = [255, 55, 225];
+  const LIME = [115, 255, 90];
+  const ORANGE = [255, 170, 50];
+  const RED = [255, 70, 90];
+  const WHITE = [235, 245, 255];
+  const GREY = [105, 118, 150];
+
+  const TIER_DATA = [
+    ['ION',      16, [ 70, 235, 255]],
+    ['BYTE',     21, [100, 255, 160]],
+    ['RIFT',     27, [255, 235,  90]],
+    ['NOVA',     34, [255, 150,  70]],
+    ['PULSE',    43, [255,  80, 145]],
+    ['QUASAR',   54, [180,  90, 255]],
+    ['ORBIT',    67, [ 70, 120, 255]],
+    ['VECTOR',   82, [ 80, 255, 245]],
+    ['ECLIPSE',  98, [255, 255, 255]],
+    ['ZENITH',  116, [255,  90,  90]],
+    ['OMEGA',   136, [180, 255,  70]],
+  ];
+  const MAX_TIER = TIER_DATA.length - 1;
+
+  const keys = new Set();
+  let audioEnabled = true;
+  let audioCtx = null;
+  let masterGain = null;
+  let sfxGain = null;
+  let musicGain = null;
+  let compressorNode = null;
+  let delayNode = null;
+  let delayFeedback = null;
+  let bgmTimer = null;
+  let bgmStep = 0;
+
+  function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
+  function choice(a) { return a[(Math.random() * a.length) | 0]; }
+  function tau() { return Math.PI * 2; }
+  function rgb(c, a = 1) { return `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${a})`; }
+  function tierName(t) { return TIER_DATA[t][0]; }
+  function tierRadius(t) { return TIER_DATA[t][1]; }
+  function tierColor(t) { return TIER_DATA[t][2]; }
+  function normalize(dx, dy) {
+    const d = Math.hypot(dx, dy);
+    if (d <= 1e-6) return [1, 0, 1];
+    return [dx / d, dy / d, d];
+  }
+  function roundRectPath(c, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    c.beginPath();
+    c.moveTo(x + rr, y);
+    c.arcTo(x + w, y, x + w, y + h, rr);
+    c.arcTo(x + w, y + h, x, y + h, rr);
+    c.arcTo(x, y + h, x, y, rr);
+    c.arcTo(x, y, x + w, y, rr);
+    c.closePath();
+  }
+  function fillRoundRect(c, x, y, w, h, r, fill) {
+    roundRectPath(c, x, y, w, h, r);
+    c.fillStyle = fill;
+    c.fill();
+  }
+  function strokeRoundRect(c, x, y, w, h, r, stroke, lw = 1) {
+    roundRectPath(c, x, y, w, h, r);
+    c.strokeStyle = stroke;
+    c.lineWidth = lw;
+    c.stroke();
+  }
+  function text(c, s, x, y, size = 16, color = WHITE, align = 'left', weight = '400') {
+    c.font = `${weight} ${size}px Consolas, Menlo, ui-monospace, monospace`;
+    c.textAlign = align;
+    c.textBaseline = 'top';
+    c.fillStyle = Array.isArray(color) ? rgb(color, 1) : color;
+    c.fillText(s, x, y);
+  }
+  function fmt(n) { return Math.floor(n).toLocaleString('en-US'); }
+  function scoreBaseForNewTier(newTier) {
+    return SCORE_BASE_BY_NEW_TIER[clamp(newTier, 0, SCORE_BASE_BY_NEW_TIER.length - 1) | 0] || 0;
+  }
+  function scoreComboMultiplier(combo) {
+    if (combo <= 1) return 1;
+    const progress = clamp((combo - 1) / Math.max(1, COMBO_MAX_AT - 1), 0, 1);
+    const shaped = Math.pow(progress, COMBO_CURVE_POWER);
+    return 1 + (COMBO_CAP - 1) * shaped;
+  }
+  function comboNextDelta(combo) {
+    const cur = scoreComboMultiplier(combo);
+    const next = scoreComboMultiplier(combo + 1);
+    return Math.max(0, next - cur);
+  }
+  function fmtMultiplier(mult) {
+    if (mult >= 100) return mult.toFixed(0);
+    if (mult >= 10) return mult.toFixed(1);
+    return mult.toFixed(2);
+  }
+
+  function ensureAudio() {
+    if (!audioEnabled) return null;
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return null;
+      audioCtx = new AC();
+
+      compressorNode = audioCtx.createDynamicsCompressor();
+      compressorNode.threshold.value = -18;
+      compressorNode.knee.value = 18;
+      compressorNode.ratio.value = 5;
+      compressorNode.attack.value = 0.008;
+      compressorNode.release.value = 0.18;
+      compressorNode.connect(audioCtx.destination);
+
+      masterGain = audioCtx.createGain();
+      masterGain.gain.value = 0.72;
+      masterGain.connect(compressorNode);
+
+      sfxGain = audioCtx.createGain();
+      sfxGain.gain.value = 0.34;
+      sfxGain.connect(masterGain);
+
+      musicGain = audioCtx.createGain();
+      musicGain.gain.value = 0.22;
+      musicGain.connect(masterGain);
+
+      delayNode = audioCtx.createDelay(1.2);
+      delayNode.delayTime.value = 0.34;
+      delayFeedback = audioCtx.createGain();
+      delayFeedback.gain.value = 0.24;
+      delayNode.connect(delayFeedback);
+      delayFeedback.connect(delayNode);
+      delayNode.connect(masterGain);
+      sfxGain.connect(delayNode);
+      musicGain.connect(delayNode);
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    startBgm();
+    return audioCtx;
+  }
+
+  function tone(freq, duration, type = 'sine', gainValue = 0.035, slide = 0, dest = sfxGain, when = 0, attack = 0.008) {
+    const ac = ensureAudio();
+    if (!ac || !dest) return;
+    const t0 = ac.currentTime + when;
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    const filter = ac.createBiquadFilter();
+    osc.type = type;
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(Math.max(220, freq * 7), t0);
+    filter.Q.setValueAtTime(0.7, t0);
+    osc.frequency.setValueAtTime(Math.max(20, freq), t0);
+    if (slide !== 0) {
+      osc.frequency.exponentialRampToValueAtTime(Math.max(35, freq + slide), t0 + duration);
+    }
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(gainValue, t0 + attack);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+    osc.connect(filter).connect(gain).connect(dest);
+    osc.start(t0);
+    osc.stop(t0 + duration + 0.04);
+  }
+
+  function noiseBurst(duration = 0.16, gainValue = 0.035, center = 1200, when = 0) {
+    const ac = ensureAudio();
+    if (!ac || !sfxGain) return;
+    const t0 = ac.currentTime + when;
+    const length = Math.max(1, Math.floor(ac.sampleRate * duration));
+    const buffer = ac.createBuffer(1, length, ac.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / length);
+    }
+    const src = ac.createBufferSource();
+    const filter = ac.createBiquadFilter();
+    const gain = ac.createGain();
+    src.buffer = buffer;
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(center, t0);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(120, center * 0.38), t0 + duration);
+    filter.Q.setValueAtTime(2.5, t0);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(gainValue, t0 + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+    src.connect(filter).connect(gain).connect(sfxGain);
+    src.start(t0);
+    src.stop(t0 + duration + 0.02);
+  }
+
+  function beep(freq, duration, type = 'sine', gainValue = 0.035, slide = 0) {
+    tone(freq, duration, type, gainValue, slide, sfxGain);
+  }
+
+  function dropSound(tier) {
+    // Intentionally quiet: regular shots should not spam the soundscape.
+  }
+
+  function mergeSound(tier, combo) {
+    // Softer, cleaner synth chord. Only called for large merges.
+    const root = 116 + tier * 24 + Math.min(combo, 20) * 2.5;
+    const gain = 0.018 + Math.min(tier, 10) * 0.0012;
+    const shimmer = Math.min(combo, 12) * 0.004;
+    tone(root, 0.34, 'triangle', gain, root * 0.18, sfxGain, 0.000, 0.018);
+    tone(root * 1.5, 0.30, 'sine', gain * 0.62, root * 0.14, sfxGain, 0.030 + shimmer, 0.020);
+    tone(root * 2.0, 0.24, 'triangle', gain * 0.42, root * 0.10, sfxGain, 0.072 + shimmer, 0.018);
+    if (tier >= 8) tone(root * 3.0, 0.20, 'sine', gain * 0.30, root * 0.16, sfxGain, 0.115, 0.025);
+  }
+
+  function omegaSound() {
+    // Big event, but less harsh: bass pulse + clean rising overtones, minimal noise.
+    tone(55, 0.82, 'triangle', 0.044, -8, sfxGain, 0.000, 0.050);
+    tone(110, 0.58, 'sine', 0.036, 38, sfxGain, 0.035, 0.035);
+    tone(220, 0.42, 'triangle', 0.026, 80, sfxGain, 0.085, 0.025);
+    tone(440, 0.30, 'sine', 0.018, 120, sfxGain, 0.140, 0.020);
+    noiseBurst(0.42, 0.020, 680, 0.000);
+  }
+
+  function gameOverSound() {
+    tone(150, 0.55, 'sawtooth', 0.055, -85, sfxGain, 0.00, 0.018);
+    tone(75, 0.70, 'triangle', 0.045, -35, sfxGain, 0.05, 0.020);
+    tone(37, 1.00, 'sine', 0.040, -10, sfxGain, 0.10, 0.050);
+    noiseBurst(0.65, 0.048, 520, 0.00);
+  }
+
+  function startBgm() {
+    if (!audioEnabled || !audioCtx || bgmTimer) return;
+    bgmTimer = setInterval(scheduleBgmStep, 150);
+    for (let i = 0; i < 8; i++) scheduleBgmStep(i * 0.150);
+  }
+
+  function scheduleBgmStep(offset = 0) {
+    if (!audioEnabled || !audioCtx || !musicGain) return;
+    const step = bgmStep++;
+    const roots = [55.00, 65.41, 49.00, 73.42];
+    const root = roots[Math.floor(step / 16) % roots.length];
+    const scale = [0, 3, 5, 7, 10, 12, 15, 17, 19];
+    const arp = [0, 4, 7, 8, 7, 4, 2, 5, 0, 3, 6, 8, 6, 3, 1, 5];
+    const degree = scale[arp[step % arp.length] % scale.length];
+    const freq = root * Math.pow(2, (degree + 24) / 12);
+
+    if (step % 2 === 0) {
+      tone(freq, 0.105, 'triangle', 0.017, 0, musicGain, offset, 0.006);
+    }
+    if (step % 4 === 1) {
+      tone(freq * 2.0, 0.055, 'square', 0.0065, 0, musicGain, offset + 0.010, 0.003);
+    }
+    if (step % 8 === 0) {
+      tone(root * 0.5, 0.42, 'sine', 0.052, 0, musicGain, offset, 0.024);
+      tone(root, 0.32, 'triangle', 0.030, 0, musicGain, offset + 0.008, 0.018);
+    }
+    if (step % 16 === 0) {
+      for (const interval of [0, 7, 10, 17]) {
+        tone(root * Math.pow(2, interval / 12), 2.8, 'sine', 0.020, 0, musicGain, offset + interval * 0.001, 0.180);
+      }
+    }
+    if (step % 16 === 8) {
+      for (const interval of [3, 10, 15]) {
+        tone(root * Math.pow(2, interval / 12), 1.9, 'triangle', 0.013, 0, musicGain, offset + interval * 0.001, 0.140);
+      }
+    }
+    if (step % 16 === 12) {
+      noiseBurst(0.42, 0.010, 4200, offset);
+    }
+    if (step % 32 === 28) {
+      tone(root * 6.0, 0.50, 'sine', 0.010, root * 7.0, musicGain, offset, 0.070);
+    }
+  }
+
+  class Orb {
+    constructor(tier, x, y, vx = 0, vy = 0, bornAt = 0) {
+      this.tier = tier;
+      this.x = x;
+      this.y = y;
+      this.vx = vx;
+      this.vy = vy;
+      this.id = (Math.random() * 1_000_000_000) | 0;
+      this.angle = Math.random() * tau();
+      this.spin = rand(-2.5, 2.5);
+      this.alive = true;
+      this.bornAt = bornAt;
+    }
+    get r() { return tierRadius(this.tier); }
+    get mass() { return Math.max(1, this.r * this.r); }
+  }
+
+  class Particle {
+    constructor(x, y, vx, vy, life, maxLife, color, size, drag = 0.985) {
+      this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+      this.life = life; this.maxLife = maxLife; this.color = color;
+      this.size = size; this.drag = drag;
+    }
+    update(dt) {
+      this.life -= dt;
+      this.vx *= this.drag;
+      this.vy *= this.drag;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+    }
+    draw(c, ox = 0, oy = 0) {
+      if (this.life <= 0) return;
+      const a = clamp(this.life / this.maxLife, 0, 1);
+      const radius = Math.max(1, this.size * (0.4 + 0.9 * a));
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      c.shadowBlur = 12;
+      c.shadowColor = rgb(this.color, a);
+      c.fillStyle = rgb(this.color, 0.15 + 0.85 * a);
+      c.beginPath();
+      c.arc(this.x + ox, this.y + oy, radius, 0, tau());
+      c.fill();
+      c.restore();
+    }
+  }
+
+  class Ring {
+    constructor(x, y, radius, speed, life, maxLife, color, width = 3) {
+      this.x = x; this.y = y; this.radius = radius; this.speed = speed;
+      this.life = life; this.maxLife = maxLife; this.color = color; this.width = width;
+    }
+    update(dt) {
+      this.life -= dt;
+      this.radius += this.speed * dt;
+    }
+    draw(c, ox = 0, oy = 0) {
+      if (this.life <= 0 || this.radius <= 0) return;
+      const a = clamp(this.life / this.maxLife, 0, 1);
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      c.shadowBlur = 18;
+      c.shadowColor = rgb(this.color, a);
+      c.strokeStyle = rgb(this.color, a);
+      c.lineWidth = Math.max(1, this.width * a);
+      c.beginPath();
+      c.arc(this.x + ox, this.y + oy, this.radius, 0, tau());
+      c.stroke();
+      c.restore();
+    }
+  }
+
+  class Game {
+    constructor() {
+      this.best = Number(localStorage.getItem('neonMergeBest') || localStorage.getItem('suikaWarsBest') || 0);
+      this.reset();
+    }
+
+    reset() {
+      this.pieces = [];
+      this.particles = [];
+      this.rings = [];
+      this.score = 0;
+      this.combo = 0;
+      this.comboTimer = 0;
+      this.lastGain = 0;
+      this.lastMultiplier = 1;
+      this.gainTimer = 0;
+      this.mergeFlash = 0;
+      this.shake = 0;
+      this.dropCooldown = 0;
+      this.dangerTimer = 0;
+      this.gameOver = false;
+      this.paused = false;
+      this.t = 0;
+      this.holdX = FIELD_X + FIELD_W / 2;
+      this.lastHoldX = this.holdX;
+      this.holdVx = 0;
+      this.nextQueue = [this.randomSpawnTier(), this.randomSpawnTier(), this.randomSpawnTier(), this.randomSpawnTier()];
+      this.messageTimer = 2.2;
+    }
+
+    randomSpawnTier() {
+      let cap = 2;
+      if (this.score > 2000) cap = 3;
+      if (this.score > 9000) cap = 4;
+      const pool = [];
+      for (let t = 0; t <= cap; t++) {
+        const weight = Math.max(1, 6 - t * 2);
+        for (let i = 0; i < weight; i++) pool.push(t);
+      }
+      return choice(pool);
+    }
+
+    currentTier() { return this.nextQueue[0]; }
+    canDrop() { return !this.gameOver && !this.paused && this.dropCooldown <= 0; }
+
+    drop() {
+      if (!this.canDrop()) return;
+      ensureAudio();
+      const tier = this.nextQueue.shift();
+      this.nextQueue.push(this.randomSpawnTier());
+      const r = tierRadius(tier);
+      const x = clamp(this.holdX, FIELD_LEFT + r + 2, FIELD_RIGHT - r - 2);
+      const vx = clamp(this.holdVx * 0.18, -280, 280);
+      this.pieces.push(new Orb(tier, x, SPAWN_Y, vx, 70, this.t));
+      this.dropCooldown = DROP_DELAY;
+      this.addMuzzleBurst(x, SPAWN_Y, tierColor(tier));
+      this.shake = Math.max(this.shake, 4);
+      dropSound(tier);
+    }
+
+    addMuzzleBurst(x, y, color) {
+      for (let i = 0; i < 18; i++) {
+        const a = Math.random() * tau();
+        const sp = rand(70, 280);
+        this.particles.push(new Particle(
+          x, y,
+          Math.cos(a) * sp,
+          Math.sin(a) * sp - 20,
+          rand(0.22, 0.50), 0.50,
+          color, rand(2, 4.5)
+        ));
+      }
+      this.rings.push(new Ring(x, y, 8, 360, 0.32, 0.32, color, 3));
+    }
+
+    addMergeBurst(x, y, oldTier, newTier) {
+      const color = tierColor(newTier);
+      const oldColor = tierColor(oldTier);
+      const count = 28 + newTier * 5;
+      for (let i = 0; i < count; i++) {
+        const a = Math.random() * tau();
+        const sp = rand(120, 620 + newTier * 20);
+        const c = Math.random() > 0.35 ? color : oldColor;
+        this.particles.push(new Particle(
+          x + rand(-4, 4), y + rand(-4, 4),
+          Math.cos(a) * sp, Math.sin(a) * sp,
+          rand(0.35, 0.95), 0.95,
+          c, rand(2, 6 + newTier * 0.3), rand(0.970, 0.990)
+        ));
+      }
+      this.rings.push(new Ring(x, y, tierRadius(newTier) * 0.25, 620 + 18 * newTier, 0.52, 0.52, color, 5));
+      this.rings.push(new Ring(x, y, tierRadius(newTier) * 0.70, 360 + 10 * newTier, 0.40, 0.40, WHITE, 2));
+      this.mergeFlash = 0.08;
+      this.shake = Math.max(this.shake, 8 + newTier * 1.35);
+      if (newTier >= MERGE_SOUND_MIN_TIER) mergeSound(newTier, this.combo);
+    }
+
+    addOmegaExplosion(x, y) {
+      const colors = [CYAN, MAGENTA, LIME, ORANGE, RED, WHITE];
+      for (let i = 0; i < 210; i++) {
+        const a = Math.random() * tau();
+        const sp = rand(240, 1050);
+        this.particles.push(new Particle(
+          x + rand(-10, 10), y + rand(-10, 10),
+          Math.cos(a) * sp, Math.sin(a) * sp,
+          rand(0.55, 1.35), 1.35,
+          choice(colors), rand(2.5, 8.5), rand(0.962, 0.988)
+        ));
+      }
+      this.rings.push(new Ring(x, y, 36, 980, 0.82, 0.82, WHITE, 9));
+      this.rings.push(new Ring(x, y, 70, 720, 0.95, 0.95, MAGENTA, 6));
+      this.rings.push(new Ring(x, y, 116, 500, 1.10, 1.10, CYAN, 4));
+
+      const blastRadius = 285;
+      for (const o of this.pieces) {
+        if (!o.alive) continue;
+        const dx = o.x - x;
+        const dy = o.y - y;
+        const d = Math.max(1, Math.hypot(dx, dy));
+        if (d > blastRadius) continue;
+        const power = (1 - d / blastRadius) * 820;
+        o.vx += (dx / d) * power;
+        o.vy += (dy / d) * power - 140;
+        o.spin += rand(-7, 7);
+      }
+
+      this.mergeFlash = 0.22;
+      this.shake = Math.max(this.shake, 32);
+      omegaSound();
+    }
+
+    update(dt) {
+      dt = Math.min(dt, FPS_CAP_DT);
+      this.t += dt;
+
+      this.lastHoldX = this.holdX;
+      const moveLeft = keys.has('ArrowLeft');
+      const moveRight = keys.has('ArrowRight');
+      if (moveLeft && !moveRight) this.holdX -= AIM_SPEED * dt;
+      if (moveRight && !moveLeft) this.holdX += AIM_SPEED * dt;
+      const curR = tierRadius(this.currentTier());
+      this.holdX = clamp(this.holdX, FIELD_LEFT + curR + 2, FIELD_RIGHT - curR - 2);
+      this.holdVx = (this.holdX - this.lastHoldX) / Math.max(dt, 1e-6);
+
+      if (this.dropCooldown > 0) this.dropCooldown -= dt;
+      if ((keys.has('Space') || keys.has('Enter') || keys.has('TouchDrop')) && this.canDrop()) {
+        this.drop();
+      }
+      if (this.comboTimer > 0) {
+        this.comboTimer -= dt;
+        if (this.comboTimer <= 0) this.combo = 0;
+      }
+      if (this.gainTimer > 0) this.gainTimer -= dt;
+      if (this.mergeFlash > 0) this.mergeFlash -= dt;
+      if (this.shake > 0) this.shake = Math.max(0, this.shake - 35 * dt);
+      if (this.messageTimer > 0) this.messageTimer -= dt;
+
+      for (const p of this.particles) p.update(dt);
+      this.particles = this.particles.filter(p => p.life > 0);
+      for (const r of this.rings) r.update(dt);
+      this.rings = this.rings.filter(r => r.life > 0);
+
+      if (this.gameOver || this.paused) return;
+      this.physics(dt);
+      this.checkGameOver(dt);
+      this.best = Math.max(this.best, this.score);
+      localStorage.setItem('neonMergeBest', String(this.best | 0));
+    }
+
+    physics(dt) {
+      for (const o of this.pieces) {
+        if (!o.alive) continue;
+        o.vy += GRAVITY * dt;
+        o.vy = Math.min(o.vy, MAX_FALL_SPEED);
+        o.vx *= AIR_DRAG;
+        o.x += o.vx * dt;
+        o.y += o.vy * dt;
+        o.angle += o.spin * dt;
+        this.resolveWalls(o);
+      }
+
+      let mergeCandidates = [];
+      for (let i = 0; i < SOLVER_ITERATIONS; i++) {
+        mergeCandidates = mergeCandidates.concat(this.resolvePieceCollisions());
+        for (const o of this.pieces) if (o.alive) this.resolveWalls(o);
+      }
+      if (mergeCandidates.length) this.performMerges(mergeCandidates);
+      this.pieces = this.pieces.filter(o => o.alive);
+    }
+
+    resolveWalls(o) {
+      const r = o.r;
+      if (o.x - r < FIELD_LEFT) {
+        o.x = FIELD_LEFT + r;
+        o.vx = Math.abs(o.vx) * WALL_RESTITUTION;
+        o.spin += o.vy * 0.002;
+      } else if (o.x + r > FIELD_RIGHT) {
+        o.x = FIELD_RIGHT - r;
+        o.vx = -Math.abs(o.vx) * WALL_RESTITUTION;
+        o.spin -= o.vy * 0.002;
+      }
+      if (o.y + r > FIELD_BOTTOM) {
+        o.y = FIELD_BOTTOM - r;
+        if (o.vy > 0) {
+          o.vy = -o.vy * FLOOR_RESTITUTION;
+          o.vx *= 0.88;
+          o.spin *= 0.80;
+          if (Math.abs(o.vy) < 45) o.vy = 0;
+        }
+      }
+    }
+
+    resolvePieceCollisions() {
+      const candidates = [];
+      const n = this.pieces.length;
+      for (let i = 0; i < n; i++) {
+        const a = this.pieces[i];
+        if (!a.alive) continue;
+        for (let j = i + 1; j < n; j++) {
+          const b = this.pieces[j];
+          if (!b.alive) continue;
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const [nx, ny, dist] = normalize(dx, dy);
+          const minDist = a.r + b.r;
+          const overlap = minDist - dist;
+          const mergeSlack = Math.max(MERGE_MIN_PIXELS, Math.min(a.r, b.r) * MERGE_GAP_TOLERANCE);
+
+          if (a.tier === b.tier && dist <= minDist + mergeSlack) {
+            candidates.push([a.id, b.id]);
+          }
+
+          if (overlap <= 0) continue;
+
+          const invA = 1 / a.mass;
+          const invB = 1 / b.mass;
+          const invSum = invA + invB;
+          if (invSum <= 0) continue;
+
+          const correction = overlap * 0.84;
+          a.x -= nx * correction * (invA / invSum);
+          a.y -= ny * correction * (invA / invSum);
+          b.x += nx * correction * (invB / invSum);
+          b.y += ny * correction * (invB / invSum);
+
+          const rvx = b.vx - a.vx;
+          const rvy = b.vy - a.vy;
+          const velNorm = rvx * nx + rvy * ny;
+          if (velNorm < 0) {
+            const restitution = 0.16;
+            const impulse = -(1 + restitution) * velNorm / invSum;
+            const ix = impulse * nx;
+            const iy = impulse * ny;
+            a.vx -= ix * invA;
+            a.vy -= iy * invA;
+            b.vx += ix * invB;
+            b.vy += iy * invB;
+
+            const tx = -ny;
+            const ty = nx;
+            const vt = rvx * tx + rvy * ty;
+            const friction = clamp(vt * 0.018, -8.5, 8.5);
+            a.vx += tx * friction;
+            a.vy += ty * friction;
+            b.vx -= tx * friction;
+            b.vy -= ty * friction;
+            a.spin -= vt * 0.0009;
+            b.spin += vt * 0.0009;
+          }
+        }
+      }
+      return candidates;
+    }
+
+    performMerges(candidates) {
+      const byId = new Map();
+      for (const o of this.pieces) if (o.alive) byId.set(o.id, o);
+      const consumed = new Set();
+      const seen = new Set();
+      const unique = [];
+      for (const [aId, bId] of candidates) {
+        const key = aId < bId ? `${aId}:${bId}` : `${bId}:${aId}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          unique.push([aId, bId]);
+        }
+      }
+
+      for (const [aId, bId] of unique) {
+        if (consumed.has(aId) || consumed.has(bId)) continue;
+        const a = byId.get(aId);
+        const b = byId.get(bId);
+        if (!a || !b || !a.alive || !b.alive) continue;
+        if (a.tier !== b.tier) continue;
+
+        const oldTier = a.tier;
+        const newX = (a.x * a.mass + b.x * b.mass) / (a.mass + b.mass);
+        const newY = (a.y * a.mass + b.y * b.mass) / (a.mass + b.mass);
+        a.alive = false;
+        b.alive = false;
+        consumed.add(aId);
+        consumed.add(bId);
+
+        if (this.comboTimer > 0) this.combo += 1;
+        else this.combo = 1;
+        this.comboTimer = COMBO_WINDOW;
+        const multiplier = scoreComboMultiplier(this.combo);
+
+        if (oldTier >= MAX_TIER) {
+          const gain = Math.floor(OMEGA_BLAST_BASE_SCORE * multiplier);
+          this.score += gain;
+          this.lastGain = gain;
+          this.lastMultiplier = multiplier;
+          this.gainTimer = 1.15;
+          this.addOmegaExplosion(newX, newY);
+          continue;
+        }
+
+        const newTier = oldTier + 1;
+        const newVx = (a.vx + b.vx) * 0.34;
+        const newVy = (a.vy + b.vy) * 0.26 - 80;
+
+        const orb = new Orb(newTier, newX, newY, newVx, newVy, this.t);
+        orb.spin = rand(-4.5, 4.5);
+        this.pieces.push(orb);
+
+        const base = scoreBaseForNewTier(newTier);
+        const gain = Math.floor(base * multiplier);
+        this.score += gain;
+        this.lastGain = gain;
+        this.lastMultiplier = multiplier;
+        this.gainTimer = 1.00;
+        this.addMergeBurst(newX, newY, oldTier, newTier);
+      }
+    }
+
+    checkGameOver(dt) {
+      let danger = false;
+      let overflow = false;
+
+      for (const o of this.pieces) {
+        if (!o.alive) continue;
+
+        const age = this.t - o.bornAt;
+        const top = o.y - o.r;
+
+        // Ignore just-launched pieces, but do not require them to be settled.
+        // With rapid fire enabled, the old "settled only" rule let crowded balls
+        // keep moving near the top forever without triggering game over.
+        if (age < 0.85) continue;
+
+        // Direct overflow: if a live ball visibly protrudes above the field,
+        // trigger the danger timer much faster.
+        if (top < FIELD_TOP + 4) {
+          overflow = true;
+          danger = true;
+          break;
+        }
+
+        // Normal overload: staying above the overload line is dangerous even
+        // while the ball is still being pushed around by other balls.
+        if (age > 1.05 && top < DANGER_Y) {
+          danger = true;
+        }
+      }
+
+      if (overflow) this.dangerTimer += dt * 4.0;
+      else if (danger) this.dangerTimer += dt;
+      else this.dangerTimer = Math.max(0, this.dangerTimer - dt * 1.5);
+
+      if (this.dangerTimer > 1.25) {
+        this.gameOver = true;
+        this.best = Math.max(this.best, this.score);
+        localStorage.setItem('neonMergeBest', String(this.best | 0));
+        this.shake = 18;
+        for (let i = 0; i < 140; i++) {
+          const x = rand(FIELD_LEFT, FIELD_RIGHT);
+          const y = rand(FIELD_TOP, FIELD_BOTTOM);
+          const a = Math.random() * tau();
+          const sp = rand(80, 480);
+          this.particles.push(new Particle(x, y, Math.cos(a) * sp, Math.sin(a) * sp, 1.4, 1.4, choice([CYAN, MAGENTA, LIME, ORANGE, RED]), rand(2, 5)));
+        }
+        this.rings.push(new Ring(FIELD_X + FIELD_W / 2, FIELD_Y + FIELD_H / 2, 30, 780, 0.9, 0.9, RED, 8));
+        gameOverSound();
+      }
+    }
+
+    drawBackground(c) {
+      c.fillStyle = 'rgb(2, 3, 10)';
+      c.fillRect(0, 0, WIDTH, HEIGHT);
+
+      const deep = c.createRadialGradient(WIDTH * 0.5, HEIGHT * 0.42, 30, WIDTH * 0.5, HEIGHT * 0.42, 860);
+      deep.addColorStop(0, 'rgba(15, 24, 68, 0.92)');
+      deep.addColorStop(0.42, 'rgba(8, 10, 32, 0.88)');
+      deep.addColorStop(1, 'rgba(0, 0, 0, 0.95)');
+      c.fillStyle = deep;
+      c.fillRect(0, 0, WIDTH, HEIGHT);
+
+      const nebulaA = c.createRadialGradient(WIDTH * 0.24, HEIGHT * 0.24, 10, WIDTH * 0.24, HEIGHT * 0.24, 300);
+      nebulaA.addColorStop(0, 'rgba(80, 235, 255, 0.24)');
+      nebulaA.addColorStop(0.35, 'rgba(40, 140, 255, 0.13)');
+      nebulaA.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      c.fillStyle = nebulaA;
+      c.fillRect(0, 0, WIDTH, HEIGHT);
+
+      const nebulaB = c.createRadialGradient(WIDTH * 0.76, HEIGHT * 0.30, 10, WIDTH * 0.76, HEIGHT * 0.30, 320);
+      nebulaB.addColorStop(0, 'rgba(255, 90, 235, 0.22)');
+      nebulaB.addColorStop(0.4, 'rgba(110, 70, 255, 0.12)');
+      nebulaB.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      c.fillStyle = nebulaB;
+      c.fillRect(0, 0, WIDTH, HEIGHT);
+
+      const nebulaC = c.createRadialGradient(WIDTH * 0.52, HEIGHT * 0.78, 20, WIDTH * 0.52, HEIGHT * 0.78, 360);
+      nebulaC.addColorStop(0, 'rgba(110, 150, 255, 0.18)');
+      nebulaC.addColorStop(0.45, 'rgba(40, 85, 180, 0.10)');
+      nebulaC.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      c.fillStyle = nebulaC;
+      c.fillRect(0, 0, WIDTH, HEIGHT);
+
+      c.save();
+      c.globalCompositeOperation = 'screen';
+      c.fillStyle = 'rgba(180, 210, 255, 0.06)';
+      c.translate(WIDTH * 0.5, HEIGHT * 0.5);
+      c.rotate(-0.28);
+      c.fillRect(-WIDTH * 0.62, -34, WIDTH * 1.24, 68);
+      c.restore();
+
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 180; i++) {
+        const px = (Math.sin(i * 91.713) * 0.5 + 0.5) * WIDTH;
+        const py = (Math.sin(i * 47.137 + 1.7) * 0.5 + 0.5) * HEIGHT;
+        const tw = 0.45 + 0.55 * (Math.sin(this.t * (0.9 + (i % 5) * 0.17) + i * 2.17) * 0.5 + 0.5);
+        const size = (i % 9 === 0) ? 2.2 : 1.2;
+        c.fillStyle = `rgba(235,245,255,${0.22 + tw * 0.55})`;
+        c.fillRect(px, py, size, size);
+      }
+      for (let i = 0; i < 55; i++) {
+        const bx = (Math.sin(i * 19.73 + 0.3) * 0.5 + 0.5) * WIDTH;
+        const by = (Math.sin(i * 31.27 + 2.4) * 0.5 + 0.5) * HEIGHT;
+        const pulse = 0.35 + 0.65 * (Math.sin(this.t * (0.45 + (i % 7) * 0.08) + i * 1.3) * 0.5 + 0.5);
+        c.fillStyle = i % 3 === 0 ? `rgba(120,220,255,${0.18 + pulse * 0.30})` : `rgba(255,210,255,${0.12 + pulse * 0.24})`;
+        c.beginPath();
+        c.arc(bx, by, 1.6 + (i % 4) * 0.35, 0, tau());
+        c.fill();
+      }
+      c.restore();
+
+      const offset = (this.t * 35) % 44;
+      c.save();
+      c.lineWidth = 1;
+      c.strokeStyle = 'rgba(20,35,62,0.34)';
+      for (let x = -44; x < WIDTH + 88; x += 44) {
+        c.beginPath();
+        c.moveTo(x + offset, 0);
+        c.lineTo(x - 260 + offset, HEIGHT);
+        c.stroke();
+      }
+      for (let y = -44; y < HEIGHT + 88; y += 44) {
+        c.beginPath();
+        c.moveTo(0, y + offset);
+        c.lineTo(WIDTH, y - 180 + offset);
+        c.stroke();
+      }
+      c.restore();
+
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 64; i++) {
+        const bx = (Math.sin(i * 999.17) * 0.5 + 0.5) * WIDTH;
+        const by = (Math.sin(i * 481.31 + 2.1) * 0.5 + 0.5) * HEIGHT;
+        const phase = this.t * (0.25 + (i % 11) * 0.04) + i;
+        const x = (bx + Math.sin(phase) * 24 + WIDTH) % WIDTH;
+        const y = (by + Math.cos(phase * 0.8) * 24 + HEIGHT) % HEIGHT;
+        c.fillStyle = i % 2 ? 'rgba(18,70,100,0.38)' : 'rgba(75,40,140,0.34)';
+        c.fillRect(x, y, 2, 2);
+      }
+      c.restore();
+    }
+
+    drawField(c, ox = 0, oy = 0) {
+      c.save();
+      fillRoundRect(c, FIELD_X + ox, FIELD_Y + oy, FIELD_W, FIELD_H, 18, 'rgba(5, 9, 24, 0.52)');
+      const fieldGlow = c.createLinearGradient(FIELD_X, FIELD_Y, FIELD_X, FIELD_BOTTOM);
+      fieldGlow.addColorStop(0, 'rgba(80, 140, 255, 0.08)');
+      fieldGlow.addColorStop(0.45, 'rgba(20, 25, 50, 0.03)');
+      fieldGlow.addColorStop(1, 'rgba(190, 90, 255, 0.07)');
+      fillRoundRect(c, FIELD_X + ox, FIELD_Y + oy, FIELD_W, FIELD_H, 18, fieldGlow);
+      c.beginPath();
+      roundRectPath(c, FIELD_X + ox, FIELD_Y + oy, FIELD_W, FIELD_H, 18);
+      c.clip();
+      c.strokeStyle = 'rgba(45,85,130,0.20)';
+      c.lineWidth = 1;
+      for (let y = 0; y < FIELD_H; y += 18) {
+        c.beginPath();
+        c.moveTo(FIELD_X + ox, FIELD_Y + oy + y);
+        c.lineTo(FIELD_X + ox + FIELD_W, FIELD_Y + oy + y);
+        c.stroke();
+      }
+      c.restore();
+
+      c.save();
+      c.shadowBlur = 26;
+      c.shadowColor = rgb(CYAN, 0.72);
+      strokeRoundRect(c, FIELD_X + ox, FIELD_Y + oy, FIELD_W, FIELD_H, 18, 'rgba(20,95,125,0.95)', 8);
+      c.shadowBlur = 12;
+      strokeRoundRect(c, FIELD_X + ox, FIELD_Y + oy, FIELD_W, FIELD_H, 18, rgb(CYAN), 3);
+      c.shadowBlur = 0;
+      strokeRoundRect(c, FIELD_X + ox, FIELD_Y + oy, FIELD_W, FIELD_H, 18, rgb(WHITE), 1);
+      c.restore();
+
+      const pulse = (Math.sin(this.t * 7) + 1) * 0.5;
+      const dangerCol = [
+        lerp(90, RED[0], pulse),
+        lerp(35, RED[1], pulse),
+        lerp(55, RED[2], pulse),
+      ];
+      c.save();
+      c.shadowBlur = 10 + pulse * 10;
+      c.shadowColor = rgb(RED, 0.8);
+      c.strokeStyle = rgb(dangerCol, 0.9);
+      c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(FIELD_LEFT + ox + 14, DANGER_Y + oy);
+      c.lineTo(FIELD_RIGHT + ox - 14, DANGER_Y + oy);
+      c.stroke();
+      c.restore();
+      text(c, 'OVERLOAD LINE', FIELD_LEFT + ox + 18, DANGER_Y + oy - 18, 12, dangerCol);
+    }
+
+    drawOrb(c, o, ox = 0, oy = 0, ghost = false) {
+      const r = o.r;
+      const color = tierColor(o.tier);
+      const x = o.x + ox;
+      const y = o.y + oy;
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      const glow = c.createRadialGradient(x, y, r * 0.2, x, y, r * 2.7);
+      glow.addColorStop(0, rgb(color, ghost ? 0.20 : 0.40));
+      glow.addColorStop(0.34, rgb(color, ghost ? 0.12 : 0.25));
+      glow.addColorStop(1, rgb(color, 0));
+      c.fillStyle = glow;
+      c.beginPath();
+      c.arc(x, y, r * 2.7, 0, tau());
+      c.fill();
+      c.restore();
+
+      c.save();
+      c.globalAlpha = ghost ? 0.52 : 1;
+      const body = c.createRadialGradient(x - r * 0.35, y - r * 0.42, r * 0.1, x, y, r);
+      body.addColorStop(0, rgb(WHITE, 0.72));
+      body.addColorStop(0.22, rgb(color, 0.95));
+      body.addColorStop(1, `rgba(${(color[0] * 0.35) | 0},${(color[1] * 0.35) | 0},${(color[2] * 0.35) | 0},1)`);
+      c.fillStyle = body;
+      c.beginPath();
+      c.arc(x, y, r, 0, tau());
+      c.fill();
+
+      c.lineWidth = 2;
+      c.strokeStyle = rgb(color, 1);
+      c.shadowBlur = 12;
+      c.shadowColor = rgb(color, 0.9);
+      c.beginPath();
+      c.arc(x, y, r, 0, tau());
+      c.stroke();
+
+      c.shadowBlur = 0;
+      c.strokeStyle = 'rgba(10,15,35,0.55)';
+      c.lineWidth = 1;
+      c.beginPath();
+      c.arc(x, y, r * 0.78, 0, tau());
+      c.stroke();
+      c.strokeStyle = rgb(WHITE, 0.78);
+      c.beginPath();
+      c.arc(x, y, r * 0.42, 0, tau());
+      c.stroke();
+
+      const spokes = 3 + Math.min(5, o.tier);
+      for (let k = 0; k < spokes; k++) {
+        const a = o.angle + k * tau() / spokes;
+        const x1 = x + Math.cos(a) * r * 0.22;
+        const y1 = y + Math.sin(a) * r * 0.22;
+        const x2 = x + Math.cos(a) * r * 0.70;
+        const y2 = y + Math.sin(a) * r * 0.70;
+        c.strokeStyle = k === 0 ? rgb(WHITE, 0.95) : rgb(color, 0.85);
+        c.lineWidth = 1;
+        c.beginPath();
+        c.moveTo(x1, y1);
+        c.lineTo(x2, y2);
+        c.stroke();
+      }
+
+      const label = r >= 38 ? tierName(o.tier) : String(o.tier + 1);
+      c.font = `${r < 50 ? 12 : 16}px Consolas, Menlo, ui-monospace, monospace`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillStyle = rgb(WHITE, 0.95);
+      c.shadowBlur = 4;
+      c.shadowColor = 'black';
+      c.fillText(label, x, y);
+      c.restore();
+    }
+
+    drawAim(c, ox = 0, oy = 0) {
+      if (this.gameOver || this.paused) return;
+
+      const tier = this.currentTier();
+      const r = tierRadius(tier);
+      const color = tierColor(tier);
+      const x = this.holdX + ox;
+      const y = SPAWN_Y + oy;
+      const pulse = (Math.sin(this.t * 10) + 1) * 0.5;
+
+      // Subtle original-style launch frame only.
+      // No arrow, no text label, no dark backing plate, no long aim line.
+      c.save();
+      c.globalCompositeOperation = 'lighter';
+      c.shadowBlur = 13;
+      c.shadowColor = rgb(color, 0.85);
+
+      c.strokeStyle = rgb(color, 0.82);
+      c.lineWidth = 2;
+      c.beginPath();
+      c.arc(x, y, r + 5 + pulse * 2, 0, tau());
+      c.stroke();
+
+      c.strokeStyle = rgb(WHITE, 0.55);
+      c.lineWidth = 1;
+      c.beginPath();
+      c.arc(x, y, r + 1, 0, tau());
+      c.stroke();
+
+      c.fillStyle = rgb(color, 0.08 + pulse * 0.05);
+      c.beginPath();
+      c.arc(x, y, r, 0, tau());
+      c.fill();
+
+      c.restore();
+    }
+
+    drawPieces(c, ox = 0, oy = 0) {
+      const sorted = this.pieces.filter(p => p.alive).sort((a, b) => b.r - a.r);
+      for (const o of sorted) this.drawOrb(c, o, ox, oy, false);
+    }
+
+    drawParticles(c, ox = 0, oy = 0) {
+      for (const r of this.rings) r.draw(c, ox, oy);
+      for (const p of this.particles) p.draw(c, ox, oy);
+    }
+
+    panelLabel(c, label, value, x, y, color) {
+      text(c, label, x, y, 12, GREY);
+      text(c, value, x, y + 20, 24, color, 'left', '700');
+    }
+
+    drawPanel(c) {
+      const x = 690;
+      fillRoundRect(c, x, 82, 220, 760, 18, rgb(PANEL_BG));
+      strokeRoundRect(c, x, 82, 220, 760, 18, 'rgba(30,75,110,1)', 2);
+
+      let y = 104;
+      text(c, 'SCORE', x + 24, y, 11, GREY); y += 16;
+      text(c, fmt(this.score), x + 24, y, 20, CYAN, 'left', '700'); y += 34;
+      text(c, 'BEST', x + 24, y, 11, GREY); y += 16;
+      text(c, fmt(this.best), x + 24, y, 16, LIME, 'left', '700'); y += 30;
+      const comboCol = this.combo > 1 ? ORANGE : GREY;
+      text(c, 'COMBO', x + 24, y, 11, GREY);
+      text(c, this.combo > 0 ? `x${this.combo}` : '-', x + 96, y - 3, 18, comboCol, 'left', '700');
+      if (this.comboTimer > 0) {
+        const barW = 150 * clamp(this.comboTimer / COMBO_WINDOW, 0, 1);
+        fillRoundRect(c, x + 24, y + 22, 150, 5, 3, 'rgba(30,30,45,1)');
+        fillRoundRect(c, x + 24, y + 22, barW, 5, 3, rgb(comboCol));
+      }
+      const mult = this.combo > 0 ? scoreComboMultiplier(this.combo) : 1;
+      text(c, `BONUS x${fmtMultiplier(mult)}`, x + 24, y + 32, 11, this.combo > 1 ? ORANGE : GREY);
+      if (this.gainTimer > 0) text(c, `+${fmt(this.lastGain)}`, x + 124, y + 32, 11, LIME, 'left', '700');
+      y += 58;
+
+      text(c, 'NEXT', x + 24, y, 14, WHITE, 'left', '700');
+      y += 30;
+      for (let idx = 0; idx < this.nextQueue.length; idx++) {
+        const tier = this.nextQueue[idx];
+        const r = Math.min(19, tierRadius(tier));
+        const cx = x + 43 + idx * 39;
+        const cy = y + 23;
+        const color = tierColor(tier);
+        c.save();
+        c.shadowBlur = 10;
+        c.shadowColor = rgb(color);
+        c.fillStyle = rgb(color);
+        c.beginPath();
+        c.arc(cx, cy, r, 0, tau());
+        c.fill();
+        c.strokeStyle = rgb(WHITE);
+        c.lineWidth = 1;
+        c.stroke();
+        c.font = '11px Consolas, Menlo, ui-monospace, monospace';
+        c.fillStyle = rgb(BG);
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillText(String(tier + 1), cx, cy);
+        c.restore();
+      }
+      y += 62;
+
+      text(c, 'RANKS', x + 24, y, 14, WHITE, 'left', '700');
+      y += 24;
+      for (let i = 0; i < TIER_DATA.length; i++) {
+        const [name, radius, color] = TIER_DATA[i];
+        const cy = y + i * 19;
+        c.save();
+        c.shadowBlur = 8;
+        c.shadowColor = rgb(color);
+        c.fillStyle = rgb(color);
+        c.beginPath();
+        c.arc(x + 34, cy + 7, 5, 0, tau());
+        c.fill();
+        c.restore();
+        text(c, `${String(i + 1).padStart(2, '0')} ${name}`, x + 48, cy, 11, [190, 205, 225]);
+        text(c, `R${radius}`, x + 158, cy, 10, GREY);
+      }
+      y += TIER_DATA.length * 19 + 8;
+      const nextDelta = comboNextDelta(Math.max(1, this.combo));
+      text(c, `CURVE x${fmtMultiplier(COMBO_CAP)} @ ${COMBO_MAX_AT} COMBO`, x + 24, y, 10, ORANGE, 'left', '700');
+      text(c, `NEXT +${nextDelta.toFixed(nextDelta >= 10 ? 0 : 2)}x`, x + 24, y + 14, 10, ORANGE, 'left', '700');
+      text(c, 'OMEGA + OMEGA = BLAST', x + 24, y + 28, 10, ORANGE, 'left', '700');
+
+      c.save();
+      c.strokeStyle = 'rgba(80,160,220,0.25)';
+      c.lineWidth = 1;
+      c.beginPath();
+      c.moveTo(x + 24, 690);
+      c.lineTo(x + 196, 690);
+      c.stroke();
+      c.restore();
+
+      const controls = [
+        '← / → : MOVE DROP X',
+        'HOLD SPACE/ENTER : DROP',
+        'TOUCH : TAP DROP',
+        'HOLD/DRAG : RAPID',
+        'P/R/M : PAUSE/RESET/SOUND',
+      ];
+      y = 712;
+      for (const line of controls) {
+        text(c, line, x + 24, y, 12, GREY);
+        y += 16;
+      }
+      text(c, `AUDIO : ${audioEnabled ? 'ON' : 'OFF'}`, x + 24, 824, 12, audioEnabled ? LIME : RED);
+    }
+
+    centerModal(c, title, subtitle) {
+      const x = FIELD_X;
+      const y = 330;
+      c.save();
+      fillRoundRect(c, x, y, 560, 190, 22, 'rgba(5,8,20,0.90)');
+      c.shadowBlur = 22;
+      c.shadowColor = this.gameOver ? rgb(RED, 0.9) : rgb(CYAN, 0.9);
+      strokeRoundRect(c, x, y, 560, 190, 22, this.gameOver ? rgb(RED) : rgb(CYAN), 3);
+      text(c, title, x + 280, y + 42, 44, this.gameOver ? RED : CYAN, 'center', '700');
+      text(c, subtitle, x + 280, y + 96, 24, WHITE, 'center', '700');
+      text(c, `SCORE ${fmt(this.score)}    BEST ${fmt(this.best)}`, x + 280, y + 134, 16, GREY, 'center');
+      c.restore();
+    }
+
+    drawOverlayMessages(c) {
+      if (this.messageTimer > 0 && !this.gameOver) {
+        const a = clamp(this.messageTimer / 2.2, 0, 1);
+        const msg = 'PC: HOLD SPACE / ENTER. TOUCH: TAP DROP / HOLD & DRAG RAPID.';
+        const yy = 34 + (1 - a) * -12;
+        text(c, msg, FIELD_X + FIELD_W / 2 + 2, yy + 2, 24, MAGENTA, 'center', '700');
+        text(c, msg, FIELD_X + FIELD_W / 2, yy, 24, WHITE, 'center', '700');
+      }
+      if (this.paused) this.centerModal(c, 'PAUSED', 'Press P to resume');
+      if (this.gameOver) this.centerModal(c, 'SYSTEM OVERLOAD', 'Press R to restart');
+    }
+
+    draw(c) {
+      this.drawBackground(c);
+      let ox = 0, oy = 0;
+      if (this.shake > 0) {
+        ox = rand(-this.shake, this.shake);
+        oy = rand(-this.shake, this.shake);
+      }
+      this.drawField(c, ox, oy);
+      this.drawPieces(c, ox, oy);
+      this.drawParticles(c, ox, oy);
+      this.drawPanel(c);
+
+      if (this.mergeFlash > 0) {
+        c.save();
+        c.globalCompositeOperation = 'lighter';
+        c.fillStyle = `rgba(255,255,255,${0.31 * clamp(this.mergeFlash / 0.08, 0, 1)})`;
+        c.fillRect(0, 0, WIDTH, HEIGHT);
+        c.restore();
+      }
+
+      const vg = c.createRadialGradient(WIDTH / 2, HEIGHT / 2, 360, WIDTH / 2, HEIGHT / 2, 700);
+      vg.addColorStop(0, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(0,0,0,0.74)');
+      c.fillStyle = vg;
+      c.fillRect(0, 0, WIDTH, HEIGHT);
+      this.drawAim(c);
+      this.drawOverlayMessages(c);
+    }
+  }
+
+  const game = new Game();
+
+  function clientToCanvas(clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left) * WIDTH / rect.width,
+      y: (clientY - rect.top) * HEIGHT / rect.height,
+    };
+  }
+
+  function setHoldFromClient(clientX, clientY) {
+    const p = clientToCanvas(clientX, clientY);
+    const r = tierRadius(game.currentTier());
+    game.holdX = clamp(p.x, FIELD_LEFT + r + 2, FIELD_RIGHT - r - 2);
+    return p;
+  }
+
+  const touchState = {
+    active: false,
+    pointerId: null,
+    startX: 0,
+    startY: 0,
+    lastX: 0,
+    lastY: 0,
+    startAt: 0,
+    rapid: false,
+  };
+
+  function stopTouchRapid() {
+    touchState.active = false;
+    touchState.pointerId = null;
+    touchState.rapid = false;
+    keys.delete('TouchDrop');
+  }
+
+  function startTouchRapid() {
+    if (!touchState.active || touchState.rapid) return;
+    touchState.rapid = true;
+    keys.add('TouchDrop');
+    ensureAudio();
+  }
+
+  function updateTouchRapid(now) {
+    if (!touchState.active || touchState.rapid) return;
+    if (now - touchState.startAt >= TOUCH_HOLD_MS) startTouchRapid();
+  }
+
+  function distanceFromTouchStart() {
+    return Math.hypot(touchState.lastX - touchState.startX, touchState.lastY - touchState.startY);
+  }
+
+  // Mouse remains disabled on desktop. Touch / pen are enabled for mobile play.
+  const blockMouseInput = ev => {
+    ev.preventDefault();
+    ev.stopPropagation();
+  };
+  ['mousemove', 'mousedown', 'mouseup', 'click', 'dblclick', 'contextmenu']
+    .forEach(type => window.addEventListener(type, blockMouseInput, { capture: true, passive: false }));
+
+  canvas.addEventListener('pointerdown', ev => {
+    if (ev.pointerType === 'mouse') {
+      blockMouseInput(ev);
+      return;
+    }
+    if (touchState.active) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    ensureAudio();
+    const p = setHoldFromClient(ev.clientX, ev.clientY);
+    touchState.active = true;
+    touchState.pointerId = ev.pointerId;
+    touchState.startX = p.x;
+    touchState.startY = p.y;
+    touchState.lastX = p.x;
+    touchState.lastY = p.y;
+    touchState.startAt = performance.now();
+    touchState.rapid = false;
+    try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+  }, { passive: false });
+
+  window.addEventListener('pointermove', ev => {
+    if (ev.pointerType === 'mouse') return;
+    if (!touchState.active || ev.pointerId !== touchState.pointerId) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const p = setHoldFromClient(ev.clientX, ev.clientY);
+    touchState.lastX = p.x;
+    touchState.lastY = p.y;
+    if (distanceFromTouchStart() >= TOUCH_DRAG_PX) startTouchRapid();
+  }, { passive: false });
+
+  function endPointerTouch(ev) {
+    if (ev.pointerType === 'mouse') return;
+    if (!touchState.active || ev.pointerId !== touchState.pointerId) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    setHoldFromClient(ev.clientX, ev.clientY);
+    const duration = performance.now() - touchState.startAt;
+    const moved = distanceFromTouchStart();
+    const wasRapid = touchState.rapid;
+    stopTouchRapid();
+    try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
+    if (!wasRapid && duration < TOUCH_HOLD_MS && moved < TOUCH_DRAG_PX) {
+      ensureAudio();
+      game.drop();
+    }
+  }
+
+  window.addEventListener('pointerup', endPointerTouch, { passive: false });
+  window.addEventListener('pointercancel', ev => {
+    if (ev.pointerType !== 'mouse' && touchState.active && ev.pointerId === touchState.pointerId) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      stopTouchRapid();
+    }
+  }, { passive: false });
+
+  // Fallback for older mobile browsers without Pointer Events.
+  canvas.addEventListener('touchstart', ev => {
+    if (window.PointerEvent || touchState.active) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    ensureAudio();
+    const t = ev.changedTouches[0];
+    const p = setHoldFromClient(t.clientX, t.clientY);
+    touchState.active = true;
+    touchState.pointerId = t.identifier;
+    touchState.startX = p.x;
+    touchState.startY = p.y;
+    touchState.lastX = p.x;
+    touchState.lastY = p.y;
+    touchState.startAt = performance.now();
+    touchState.rapid = false;
+  }, { passive: false });
+
+  window.addEventListener('touchmove', ev => {
+    if (window.PointerEvent || !touchState.active) return;
+    const t = Array.from(ev.changedTouches).find(t => t.identifier === touchState.pointerId);
+    if (!t) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const p = setHoldFromClient(t.clientX, t.clientY);
+    touchState.lastX = p.x;
+    touchState.lastY = p.y;
+    if (distanceFromTouchStart() >= TOUCH_DRAG_PX) startTouchRapid();
+  }, { passive: false });
+
+  window.addEventListener('touchend', ev => {
+    if (window.PointerEvent || !touchState.active) return;
+    const t = Array.from(ev.changedTouches).find(t => t.identifier === touchState.pointerId);
+    if (!t) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    setHoldFromClient(t.clientX, t.clientY);
+    const duration = performance.now() - touchState.startAt;
+    const moved = distanceFromTouchStart();
+    const wasRapid = touchState.rapid;
+    stopTouchRapid();
+    if (!wasRapid && duration < TOUCH_HOLD_MS && moved < TOUCH_DRAG_PX) {
+      ensureAudio();
+      game.drop();
+    }
+  }, { passive: false });
+  window.addEventListener('touchcancel', ev => {
+    if (window.PointerEvent) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    stopTouchRapid();
+  }, { passive: false });
+
+  window.addEventListener('keydown', ev => {
+    if (ev.code === 'ArrowLeft' || ev.code === 'ArrowRight' || ev.code === 'Space' || ev.code === 'Enter') {
+      keys.add(ev.code);
+    }
+    if (['Space', 'Enter', 'ArrowLeft', 'ArrowRight'].includes(ev.code)) ev.preventDefault();
+    if (['Space', 'Enter', 'ArrowLeft', 'ArrowRight', 'KeyR', 'KeyP', 'KeyM'].includes(ev.code)) ensureAudio();
+    if ((ev.code === 'Space' || ev.code === 'Enter') && !ev.repeat) game.drop();
+    else if (ev.code === 'KeyR' && !ev.repeat) game.reset();
+    else if (ev.code === 'KeyP' && !ev.repeat) { if (!game.gameOver) game.paused = !game.paused; }
+    else if (ev.code === 'KeyM' && !ev.repeat) {
+      audioEnabled = !audioEnabled;
+      if (!audioEnabled && audioCtx) audioCtx.suspend();
+      if (audioEnabled) ensureAudio();
+    }
+    else if (ev.code === 'Escape' && !ev.repeat) game.reset();
+  }, { passive: false });
+  window.addEventListener('keyup', ev => {
+    if (ev.code === 'ArrowLeft' || ev.code === 'ArrowRight' || ev.code === 'Space' || ev.code === 'Enter') {
+      keys.delete(ev.code);
+    }
+  });
+  window.addEventListener('blur', () => {
+    keys.clear();
+    stopTouchRapid();
+  });
+
+  let last = performance.now();
+  function frame(now) {
+    const dt = (now - last) / 1000;
+    last = now;
+    updateTouchRapid(now);
+    game.update(dt);
+    game.draw(ctx);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
